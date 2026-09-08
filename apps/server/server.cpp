@@ -18,6 +18,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -152,8 +153,11 @@ int run_server(const ServerOptions & opts) {
     }
 
     svr.Get("/health", [&](const httplib::Request &, httplib::Response & res) {
+        const std::string model_name = std::filesystem::path(opts.model).filename().string();
         res.set_content("{\"status\":\"ok\",\"sample_rate\":" + std::to_string(sr) +
-                        ",\"ws_port\":" + std::to_string(ws_port > 0 ? ws_port : 0) + "}",
+                        ",\"ws_port\":" + std::to_string(ws_port > 0 ? ws_port : 0) +
+                        ",\"backend\":\"" + model.backend.name() + "\",\"model\":\"" +
+                        model_name + "\",\"default_voice\":\"" + store.default_id() + "\"}",
                         "application/json");
     });
 
@@ -272,8 +276,11 @@ int run_server(const ServerOptions & opts) {
                 read_wav_buffer((const uint8_t *) f.content.data(), f.content.size(), sr, g.ref_audio);
             }
         }
-        const std::string vid = field(req, "voice_id", "");
-        if (!vid.empty() && !store.take(vid, g.ref_codes, g.ref_frames, g.ref_text)) {
+        const std::string requested_vid = field(req, "voice_id", "");
+        const bool use_default_voice = field(req, "use_default_voice", "1") != "0";
+        std::string vid;
+        if (g.ref_audio.empty() && (!requested_vid.empty() || use_default_voice) &&
+            !store.take(requested_vid, g.ref_codes, g.ref_frames, g.ref_text, &vid)) {
             res.status = 404;
             res.set_content("{\"error\":\"unknown voice_id\"}", "application/json");
             return;
@@ -328,16 +335,16 @@ int run_server(const ServerOptions & opts) {
         std::string ref_text = field(req, "ref_text", "");
         std::vector<int> vcodes;
         int vframes = 0;
-        const std::string vid = field(req, "voice_id", "");
-        if (!vid.empty()) {
-            if (!store.take(vid, vcodes, vframes, ref_text)) {
-                res.status = 404;
-                res.set_content("{\"error\":\"unknown voice_id\"}", "application/json");
-                return;
-            }
-        } else if (!load("ref_audio", ref)) {
+        const std::string requested_vid = field(req, "voice_id", "");
+        std::string vid;
+        if (!store.take(requested_vid, vcodes, vframes, ref_text, &vid)) {
+            res.status = 404;
+            res.set_content("{\"error\":\"unknown voice_id\"}", "application/json");
+            return;
+        }
+        if (vid.empty() && !load("ref_audio", ref)) {
             res.status = 400;
-            res.set_content("{\"error\":\"ref_audio or voice_id is required\"}", "application/json");
+            res.set_content("{\"error\":\"ref_audio, voice_id, or a provider default voice is required\"}", "application/json");
             return;
         }
         if (ref_text.empty()) {

@@ -33,7 +33,7 @@ the rate given in the `ready` message, exactly like the HTTP body.
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `start` | `voice_id`, `instruction`, `ref_text`, `cfg_scale`, `seed`, `temperature`, `top_k`, `split_chars` | Opens a session. Encodes the reference once for all of it. |
+| `start` | `voice_id`, `use_default_voice`, `instruction`, `ref_text`, `cfg_scale`, `seed`, `temperature`, `top_k`, `split_chars` | Opens a session. Encodes the reference once for all of it. Set `use_default_voice` to `0` to force voice design. |
 | `text` | `text` | Adds text. Whole sentences are spoken as they complete, the rest waits. |
 | `flush` | `text` | Speaks everything buffered plus this text as one piece, sentence ending or not. Use it when the client has already split the text itself. |
 | `instruction` | `instruction` | Changes delivery for every piece queued after it. |
@@ -42,7 +42,8 @@ the rate given in the `ready` message, exactly like the HTTP body.
 
 `start` takes a `voice_id`, not a file. Reference clips are uploaded over HTTP to
 `POST /v1/voices`, which hands back an id. See [voices.md](voices.md). Leaving
-`voice_id` out gives voice design driven by `instruction`.
+`voice_id` out uses the provider's persisted default voice when one is selected,
+or voice design driven by `instruction` when no default is set.
 
 ## Messages you receive
 

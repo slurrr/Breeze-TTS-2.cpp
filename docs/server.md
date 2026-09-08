@@ -13,6 +13,7 @@ rather than waiting for the whole clip.
 | `GET /v1/voices` | List cached and saved voices |
 | `GET /v1/voices/<id>` | One voice, with its description and metadata |
 | `PATCH /v1/voices/<id>` | Change a voice's description and metadata, see [voices.md](voices.md#descriptions-and-metadata) |
+| `GET`, `PUT`, `DELETE /v1/voices/default` | Inspect, select, or clear the persisted provider default voice |
 | `DELETE /v1/voices/<id>` | Drop a voice from memory |
 
 A separate WebSocket listener handles incremental text, mid stream direction
@@ -228,7 +229,7 @@ curl http://127.0.0.1:8137/health
 ```
 
 ```json
-{"status":"ok","sample_rate":24000,"ws_port":8081}
+{"status":"ok","sample_rate":24000,"ws_port":8081,"backend":"CUDA0","model":"breeze-tts-2-q8_0.gguf","default_voice":"harbour"}
 ```
 
 The server does not accept connections until loading finishes, so a successful
@@ -236,7 +237,9 @@ response also means the model is warm. Poll this after startup instead of
 guessing at a delay.
 
 `ws_port` is where the streaming socket ended up, or `0` when it is disabled, so
-clients can discover it rather than being configured with it.
+clients can discover it rather than being configured with it. `backend`, `model`,
+and `default_voice` make the effective runtime configuration observable rather
+than requiring inspection of process arguments and logs.
 
 ## `POST /v1/audio/speech`
 
@@ -253,7 +256,8 @@ Accepts `multipart/form-data` (needed for the reference audio upload) or
 | `instruction` | string | `Speak clearly and naturally.` | Voice description or delivery direction. |
 | `ref_audio` | file | none | Reference WAV for cloning. Any sample rate or channel count; resampled to mono at the model rate. Identical repeated uploads (same bytes and transcript) reuse the reference encode from the in-memory hash cache instead of re-encoding; see [voices.md](voices.md). |
 | `ref_text` | string | empty | Exact transcript of `ref_audio`. Required whenever `ref_audio` is present. |
-| `voice_id` | string | none | A saved or cached voice to clone instead of uploading a clip. Skips the reference encode. See [voices.md](voices.md). |
+| `voice_id` | string | provider default | A saved or cached voice to clone instead of uploading a clip. Skips the reference encode. See [voices.md](voices.md). |
+| `use_default_voice` | integer | `1` | Set to `0` to force voice design when a provider default voice is selected. An explicit `voice_id` still wins. |
 | `cfg_scale` | float | `1.0` | Classifier free guidance. `1.0` disables it. |
 | `seed` | int | `42` | RNG seed. |
 | `temperature` | float | model default | Sampling temperature. `0` keeps whatever the GGUF was built with. |

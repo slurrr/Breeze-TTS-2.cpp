@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstdio>
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 
 namespace breeze {
 
@@ -119,6 +121,7 @@ static std::string apply_meta(const JVal & root, CachedVoice & v) {
 }
 
 void VoiceStore::load_dir(const std::string & dir, int n_codebooks) {
+    m_dir = dir;
     for (Voice & v : load_voice_dir(dir)) {
         if (v.n_codebooks != n_codebooks) {
             fprintf(stderr, "voice %s was made for a different model, skipping\n", v.name.c_str());
@@ -136,12 +139,24 @@ void VoiceStore::load_dir(const std::string & dir, int n_codebooks) {
     }
     if (!m_order.empty())
         printf("loaded %d saved voices from %s\n", (int) m_order.size(), dir.c_str());
+
+    std::ifstream selected(dir + "/.default_voice");
+    std::string id;
+    if (std::getline(selected, id) && m_voices.count(id) && m_voices[id].saved) {
+        m_default = id;
+        printf("default voice: %s\n", id.c_str());
+    } else if (!id.empty()) {
+        fprintf(stderr, "default voice %s is not available, ignoring it\n", id.c_str());
+    }
 }
 
 bool VoiceStore::take(const std::string & id, std::vector<int> & codes, int & frames,
-                      std::string & text) {
+                      std::string & text, std::string * resolved_id) {
     std::lock_guard<std::mutex> vg(m_mutex);
-    auto it = m_voices.find(id);
+    const std::string selected = id.empty() ? m_default : id;
+    if (resolved_id) *resolved_id = selected;
+    if (selected.empty()) return true;
+    auto it = m_voices.find(selected);
     if (it == m_voices.end()) return false;
     codes = it->second.codes;
     frames = it->second.frames;
@@ -164,6 +179,12 @@ void VoiceStore::put(const std::string & id, CachedVoice v) {
     if (fresh) m_order.push_back(id);
     m_voices[id] = std::move(v);
 }
+
+std::string VoiceStore::default_id() {
+    std::lock_guard<std::mutex> vg(m_mutex);
+    return m_default;
+}
+
 
 void VoiceStore::add_routes(httplib::Server & svr, BreezeModel & model, MimiCodec & codec,
                             std::mutex & gpu, const std::string & dir) {
@@ -254,6 +275,42 @@ void VoiceStore::add_routes(httplib::Server & svr, BreezeModel & model, MimiCode
         res.set_content(out + "]", "application/json");
     });
 
+    svr.Get("/v1/voices/default", [&](const httplib::Request &, httplib::Response & res) {
+        std::lock_guard<std::mutex> vg(m_mutex);
+        res.set_content("{\"voice_id\":\"" + json_escape(m_default) + "\"}", "application/json");
+    });
+
+    svr.Put("/v1/voices/default", [&](const httplib::Request & req, httplib::Response & res) {
+        const std::string id = field(req, "voice_id", "");
+        std::lock_guard<std::mutex> vg(m_mutex);
+        auto it = m_voices.find(id);
+        if (id.empty() || it == m_voices.end()) return fail(res, 404, "unknown voice_id");
+        if (!it->second.saved) return fail(res, 400, "default voice must be saved");
+        std::filesystem::create_directories(m_dir);
+        const std::string tmp = m_dir + "/.default_voice.tmp";
+        {
+            std::ofstream out(tmp, std::ios::trunc);
+            if (!out || !(out << id << "\n")) return fail(res, 500, "could not save default voice");
+        }
+        std::error_code ec;
+        std::filesystem::rename(tmp, m_dir + "/.default_voice", ec);
+        if (ec) {
+            std::filesystem::remove(tmp);
+            return fail(res, 500, "could not save default voice");
+        }
+        m_default = id;
+        res.set_content("{\"voice_id\":\"" + json_escape(m_default) + "\"}", "application/json");
+    });
+
+    svr.Delete("/v1/voices/default", [&](const httplib::Request &, httplib::Response & res) {
+        std::lock_guard<std::mutex> vg(m_mutex);
+        std::error_code ec;
+        std::filesystem::remove(m_dir + "/.default_voice", ec);
+        if (ec) return fail(res, 500, "could not clear default voice");
+        m_default.clear();
+        res.set_content("{\"voice_id\":\"\"}", "application/json");
+    });
+
     svr.Get(R"(/v1/voices/(.+))", [&, sr, spf](const httplib::Request & req, httplib::Response & res) {
         const std::string id = req.matches[1];
         std::lock_guard<std::mutex> vg(m_mutex);
@@ -287,6 +344,7 @@ void VoiceStore::add_routes(httplib::Server & svr, BreezeModel & model, MimiCode
         if (it == m_voices.end()) return fail(res, 404, "unknown voice_id");
         // the file stays put, deleting one over http would be a nasty way to lose a voice
         const bool saved = it->second.saved;
+        if (id == m_default) return fail(res, 409, "voice is the provider default");
         m_voices.erase(it);
         m_order.erase(std::remove(m_order.begin(), m_order.end(), id), m_order.end());
         res.set_content(std::string("{\"deleted\":\"") + json_escape(id) + "\",\"file_kept\":" +

@@ -193,8 +193,11 @@ static void handle_start(WsConn & conn, Session & s, const std::string & msg, Br
     g.chunk_first = chunk_first;
     g.chunk_max = chunk_max;
 
-    const std::string vid = json_str(msg, "voice_id");
-    if (!vid.empty() && !store.take(vid, g.ref_codes, g.ref_frames, g.ref_text)) {
+    const std::string requested_vid = json_str(msg, "voice_id");
+    const bool use_default_voice = json_num(msg, "use_default_voice", 1) != 0;
+    std::string vid;
+    if ((!requested_vid.empty() || use_default_voice) &&
+        !store.take(requested_vid, g.ref_codes, g.ref_frames, g.ref_text, &vid)) {
         event(conn, "error", "\"message\":\"unknown voice_id\"");
         return;
     }

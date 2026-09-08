@@ -169,6 +169,23 @@ Edit the description, add or remove fields with **+ FIELD** and **X**, then pres
 clone tab. The description also shows under the SAVED VOICE dropdown whenever
 that voice is selected, and the save row on each panel has an optional
 description box.
+## Provider default voice
+
+The server can persist one saved voice as its default. HTTP and WebSocket
+requests that omit `voice_id` use it automatically; when no default is set,
+they retain the normal voice-design behavior.
+
+```
+curl -X PUT http://127.0.0.1:8137/v1/voices/default \
+  --data-urlencode "voice_id=harbour"
+curl http://127.0.0.1:8137/v1/voices/default
+curl -X DELETE http://127.0.0.1:8137/v1/voices/default
+```
+
+Only saved voices can become the default because cached voices disappear on
+restart. The selection is stored as `.default_voice` in the voices directory.
+The web UI exposes the same controls. A default voice cannot be dropped from
+memory until the default is cleared or changed.
 
 ## The `.breeze` file
 

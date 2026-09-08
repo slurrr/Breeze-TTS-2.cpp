@@ -37,8 +37,12 @@ class VoiceStore {
 public:
     void load_dir(const std::string & dir, int n_codebooks);
 
-    // fills in a cached reference, false only when the id is unknown
-    bool take(const std::string & id, std::vector<int> & codes, int & frames, std::string & text);
+    // Resolves an explicit id, or the persisted provider default when id is empty.
+    // Returns false only when a selected id is unknown. An empty resolved_id means voice design.
+    bool take(const std::string & id, std::vector<int> & codes, int & frames, std::string & text,
+              std::string * resolved_id = nullptr);
+
+    std::string default_id();
 
     // in memory insert, unnamed entries get evicted oldest first when the table is full
     void put(const std::string & id, CachedVoice v);
@@ -49,6 +53,8 @@ public:
 private:
     std::map<std::string, CachedVoice> m_voices;
     std::vector<std::string> m_order;
+    std::string m_default;
+    std::string m_dir;
     std::mutex m_mutex;
     static const size_t max_voices = 64;
 };

@@ -7,6 +7,9 @@ const streamToggle = document.getElementById("stream");
 const bufferInput = document.getElementById("buffer");
 const bufferOut = document.getElementById("bufval");
 const stopBtn = document.getElementById("stop");
+const defaultVoice = document.getElementById("default-voice");
+const setDefaultVoice = document.getElementById("set-default-voice");
+const clearDefaultVoice = document.getElementById("clear-default-voice");
 let wsPort = 0;
 let voices = [];
 
@@ -54,9 +57,14 @@ function syncVoice(panel) {
 
 async function loadVoices() {
   let list = [];
+  let selected = "";
   try {
-    const res = await fetch("/v1/voices");
-    if (res.ok) list = await res.json();
+    const [voicesRes, defaultRes] = await Promise.all([
+      fetch("/v1/voices"),
+      fetch("/v1/voices/default")
+    ]);
+    if (voicesRes.ok) list = await voicesRes.json();
+    if (defaultRes.ok) selected = (await defaultRes.json()).voice_id || "";
   } catch (e) { return; }
   voices = list;
   renderLibrary();
@@ -66,14 +74,41 @@ async function loadVoices() {
     for (const v of list) {
       const o = document.createElement("option");
       o.value = v.id;
-      o.textContent = v.id + "  (" + v.seconds.toFixed(1) + "s)" + (v.saved ? "" : "  temporary");
+      o.textContent = v.id + "  (" + v.seconds.toFixed(1) + "s)" +
+                      (v.saved ? "" : "  temporary") + (v.id === selected ? "  DEFAULT" : "");
       if (v.description) o.title = v.description;
       sel.appendChild(o);
     }
     sel.value = list.some(v => v.id === keep) ? keep : "";
     syncVoice(sel.closest(".panel"));
   });
+  defaultVoice.innerHTML = "<option value=\"\">voice design (none)</option>";
+  for (const v of list.filter(v => v.saved)) {
+    const o = document.createElement("option");
+    o.value = v.id;
+    o.textContent = v.id;
+    defaultVoice.appendChild(o);
+  }
+  defaultVoice.value = list.some(v => v.id === selected && v.saved) ? selected : "";
 }
+
+setDefaultVoice.addEventListener("click", async () => {
+  if (!defaultVoice.value) { statusEl.textContent = "SELECT A SAVED VOICE FIRST"; return; }
+  const body = new URLSearchParams({ voice_id: defaultVoice.value });
+  const res = await fetch("/v1/voices/default", { method: "PUT", body });
+  const result = await res.json();
+  statusEl.textContent = res.ok ? "DEFAULT VOICE: " + result.voice_id
+                                : "ERROR: " + (result.error || res.status);
+  if (res.ok) await loadVoices();
+});
+
+clearDefaultVoice.addEventListener("click", async () => {
+  const res = await fetch("/v1/voices/default", { method: "DELETE" });
+  const result = await res.json();
+  statusEl.textContent = res.ok ? "DEFAULT VOICE CLEARED; USING VOICE DESIGN"
+                                : "ERROR: " + (result.error || res.status);
+  if (res.ok) await loadVoices();
+});
 
 async function saveVoice(panel) {
   const f = fields(panel);
@@ -315,6 +350,7 @@ function wsGenerate(panel, tabName) {
         sock.send(JSON.stringify({
           type: "start",
           voice_id: voice,
+          use_default_voice: tabName === "design" ? 0 : 1,
           instruction: f.instruction ? (f.instruction.value || "Speak clearly and naturally.")
                                      : "Speak clearly and naturally.",
           ref_text: f.ref_text ? f.ref_text.value || "" : "",
@@ -354,6 +390,7 @@ async function generate(panel, tabName) {
 
   const form = new FormData();
   form.append("text", text);
+  form.append("use_default_voice", tabName === "design" ? "0" : "1");
   form.append("seed", f.seed ? f.seed.value : "42");
   form.append("cfg_scale", f.cfg ? f.cfg.value : "1.0");
   form.append("instruction", f.instruction ? (f.instruction.value || "Speak clearly and naturally.")
