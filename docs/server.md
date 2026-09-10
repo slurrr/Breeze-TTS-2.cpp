@@ -26,6 +26,7 @@ breeze-server <model.gguf> [--host H] [--port P] [--webui] [--cpu]
                            [--chunk-first N] [--chunk-max N] [--verbose]
                            [--voices-dir PATH] [--ws-port P] [--split-chars N]
                            [--cors [ORIGINS]] [--no-warmup]
+                           [--stream-chars N]
 ```
 
 | Flag | Default | Meaning |
@@ -39,7 +40,8 @@ breeze-server <model.gguf> [--host H] [--port P] [--webui] [--cpu]
 | `--verbose` | off | Add a per stage timing breakdown after each request. |
 | `--voices-dir` | `voices` | Folder of saved `.breeze` voices to load at startup. See [voices.md](voices.md). |
 | `--ws-port` | HTTP port + 1 | Port for streaming sessions. `-1` disables it. See [websocket.md](websocket.md). |
-| `--split-chars` | `600` | Default length long text is broken up at. `0` sends the whole thing through in one pass. A request can still override it. |
+| `--split-chars` | `600` | Maximum model-generation piece length. `0` sends an HTTP request through in one pass; WebSocket streams retain a safe 600-character maximum. |
+| `--stream-chars` | `0` | WebSocket text buffering target. `0` speaks completed sentences immediately; a positive value groups multiple sentences for more coherent prosody. |
 | `--cors` | off | Let browser pages on other origins call the API. On its own it allows any origin; give a comma separated list to allow only those. See [Cross origin requests](#cross-origin-requests). |
 | `--no-warmup` | off | Skip the warm up at startup. See below. |
 
@@ -229,7 +231,7 @@ curl http://127.0.0.1:8137/health
 ```
 
 ```json
-{"status":"ok","sample_rate":24000,"ws_port":8081,"backend":"CUDA0","model":"breeze-tts-2-q8_0.gguf","default_voice":"harbour"}
+{"status":"ok","sample_rate":24000,"ws_port":8081,"backend":"CUDA0","model":"breeze-tts-2-q8_0.gguf","default_voice":"harbour","stream_chars":500}
 ```
 
 The server does not accept connections until loading finishes, so a successful
@@ -238,8 +240,8 @@ guessing at a delay.
 
 `ws_port` is where the streaming socket ended up, or `0` when it is disabled, so
 clients can discover it rather than being configured with it. `backend`, `model`,
-and `default_voice` make the effective runtime configuration observable rather
-than requiring inspection of process arguments and logs.
+`default_voice`, and `stream_chars` make the effective runtime configuration
+observable rather than requiring inspection of process arguments and logs.
 
 ## `POST /v1/audio/speech`
 

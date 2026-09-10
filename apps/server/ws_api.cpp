@@ -3,6 +3,7 @@
 #include "breeze/audio.h"
 #include "breeze/generation.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -75,17 +76,30 @@ static bool sentence_end(const std::string & s, size_t i) {
     return false;
 }
 
-// moves whole sentences out of buf, leaving a trailing partial behind unless force is set
-static std::vector<std::string> drain(std::string & buf, int budget, bool force) {
+// Moves coherent text out of buf. stream_chars == 0 is the legacy lowest-latency
+// sentence mode. A positive target waits for several sentences, but never lets an
+// unpunctuated passage grow beyond the model's safe piece budget. force always drains
+// the complete remainder, including text after the final punctuation mark.
+static std::vector<std::string> drain(std::string & buf, int budget, int stream_chars, bool force) {
     std::vector<std::string> out;
-    size_t cut = 0;
-    for (size_t i = 0; i < buf.size(); i++)
-        if (sentence_end(buf, i)) cut = i + ((unsigned char) buf[i] < 0x80 ? 1 : 3);
+    size_t cut = force ? buf.size() : 0;
+    if (!force) {
+        for (size_t i = 0; i < buf.size(); i++)
+            if (sentence_end(buf, i)) cut = i + ((unsigned char) buf[i] < 0x80 ? 1 : 3);
 
-    // nothing finished but the buffer is already long enough to speak, so break it on a space
-    if (!cut && !force && (int) buf.size() > budget) {
-        const size_t sp = buf.rfind(' ');
-        if (sp != std::string::npos) cut = sp + 1;
+        if (stream_chars > 0) {
+            if ((int) buf.size() < stream_chars) return out;
+            // Do not emit one stale short sentence followed by a large unfinished one.
+            // Wait up to the hard piece budget for a useful boundary instead.
+            if ((int) cut < stream_chars / 2) cut = 0;
+        }
+
+        // Nothing useful finished but the buffer is at the model-safe limit, so
+        // preserve streaming by breaking on the latest space.
+        if (!cut && (int) buf.size() >= budget) {
+            const size_t sp = buf.rfind(' ');
+            if (sp != std::string::npos) cut = sp + 1;
+        }
     }
     // flush and end mean all of it, otherwise a tail after the last full stop (a closing quote,
     // an unfinished clause) sits in the buffer and gets glued onto the front of the next message
@@ -118,6 +132,7 @@ struct Session {
     std::string buffer;
     std::string instruction = "Speak clearly and naturally.";
     int budget = 600;
+    int stream_chars = 0;
     bool started = false;
     bool ending = false;
     bool quit = false;
@@ -181,7 +196,7 @@ static void speaker(WsConn & conn, Session & s, std::mutex & gpu) {
 
 static void handle_start(WsConn & conn, Session & s, const std::string & msg, BreezeModel & model,
                          MimiCodec & codec, VoiceStore & store, int chunk_first, int chunk_max,
-                         int split_chars) {
+                         int split_chars, int stream_chars) {
     GenRequest g;
     g.instruction = json_str(msg, "instruction");
     if (g.instruction.empty()) g.instruction = "Speak clearly and naturally.";
@@ -205,8 +220,11 @@ static void handle_start(WsConn & conn, Session & s, const std::string & msg, Br
     std::lock_guard<std::mutex> lock(s.mu);
     s.instruction = g.instruction;
     s.budget = (int) json_num(msg, "split_chars", split_chars);
-    // streaming drains sentence by sentence, so it always needs a real budget to aim at
+    // Streaming always needs a hard model-safe limit even when HTTP splitting is disabled.
     if (s.budget <= 0) s.budget = 600;
+    s.stream_chars = (int) json_num(msg, "stream_chars", stream_chars);
+    if (s.stream_chars < 0) s.stream_chars = 0;
+    if (s.stream_chars > s.budget) s.stream_chars = s.budget;
     s.gen.begin(model, codec, g);
     s.started = true;
     s.queue.clear();
@@ -216,7 +234,8 @@ static void handle_start(WsConn & conn, Session & s, const std::string & msg, Br
 }
 
 void ws_connection(WsConn & conn, BreezeModel & model, MimiCodec & codec, VoiceStore & store,
-                   std::mutex & gpu, int chunk_first, int chunk_max, int split_chars) {
+                   std::mutex & gpu, int chunk_first, int chunk_max, int split_chars,
+                   int stream_chars) {
     Session s;
     std::thread worker([&] { speaker(conn, s, gpu); });
     event(conn, "ready", "\"sample_rate\":24000,\"format\":\"s16le\"");
@@ -228,7 +247,8 @@ void ws_connection(WsConn & conn, BreezeModel & model, MimiCodec & codec, VoiceS
         const std::string type = json_str(msg, "type");
 
         if (type == "start") {
-            handle_start(conn, s, msg, model, codec, store, chunk_first, chunk_max, split_chars);
+            handle_start(conn, s, msg, model, codec, store, chunk_first, chunk_max, split_chars,
+                         stream_chars);
             continue;
         }
         if (!s.started) {
@@ -241,17 +261,30 @@ void ws_connection(WsConn & conn, BreezeModel & model, MimiCodec & codec, VoiceS
             s.instruction = json_str(msg, "instruction");
             event(conn, "instruction_set");
         } else if (type == "text" || type == "flush" || type == "end") {
+            bool done_now = false;
             std::unique_lock<std::mutex> lock(s.mu);
             s.buffer += json_str(msg, "text");
             const bool force = type != "text";
             // while there is no clip to clone the opening piece doubles as the reference, and a
             // long one makes the model skip sentences later, so it stays near a normal clip length
             const int budget = s.gen.needs_anchor() && s.queue.empty() ? 200 : s.budget;
-            for (std::string & p : drain(s.buffer, budget, force))
+            const int stream_target = s.stream_chars > 0 ? std::min(s.stream_chars, budget) : 0;
+            for (std::string & p : drain(s.buffer, budget, stream_target, force))
                 s.queue.push_back({std::move(p), s.instruction});
-            if (type == "end") s.ending = true;
+            if (type == "end") {
+                s.ending = true;
+                // The final text may already have drained and finished before `end` arrives.
+                // With no queued work the speaker's wait predicate stays false, so it cannot
+                // observe `ending` and would never emit the terminal event. Complete here when
+                // it is idle; if it is still speaking, the speaker emits done after that piece.
+                if (s.queue.empty() && !s.speaking) {
+                    s.ending = false;
+                    done_now = true;
+                }
+            }
             lock.unlock();
             s.cv.notify_one();
+            if (done_now) event(conn, "done");
         } else if (type == "cancel") {
             std::lock_guard<std::mutex> lock(s.mu);
             s.queue.clear();

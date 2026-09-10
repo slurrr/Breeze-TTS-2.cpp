@@ -12,6 +12,7 @@ int main(int argc, char ** argv) {
         printf("                     [--chunk-first N] [--chunk-max N] [--verbose]\n");
         printf("                     [--voices-dir PATH] [--ws-port P] [--split-chars N]\n");
         printf("                     [--cors [ORIGINS]] [--no-warmup]\n");
+        printf("                     [--stream-chars N]\n");
         printf("\n");
         printf("  --chunk-first  frames in the first streamed chunk, lower starts sooner (default 4)\n");
         printf("  --chunk-max    frames the chunk ramps up to, higher is more efficient (default 25)\n");
@@ -27,6 +28,8 @@ int main(int argc, char ** argv) {
         printf("                 http://localhost:5173,https://app.example.com to allow only those\n");
         printf("  --no-warmup    skip the short throwaway generation at startup, the first request\n");
         printf("                 then pays for setting up the gpu pipelines instead\n");
+        printf("  --stream-chars buffer streamed text to roughly this many characters before speaking\n");
+        printf("                 at a sentence boundary; 0 speaks each completed sentence (default 0)\n");
         return argc < 2 ? 1 : 0;
     }
     ServerOptions opts;
@@ -50,9 +53,11 @@ int main(int argc, char ** argv) {
             opts.cors = "*";
             if (i + 1 < argc && argv[i + 1][0] != '-') opts.cors = argv[++i];
         }
+        else if (a == "--stream-chars" && i + 1 < argc) opts.stream_chars = atoi(argv[++i]);
         else { fprintf(stderr, "unknown arg: %s\n", a.c_str()); return 1; }
     }
     if (opts.split_chars < 0) opts.split_chars = 0;
+    if (opts.stream_chars < 0) opts.stream_chars = 0;
     if (opts.chunk_first < 1 || opts.chunk_max < 1) {
         fprintf(stderr, "chunk sizes must be at least 1\n");
         return 1;

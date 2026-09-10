@@ -146,7 +146,8 @@ int run_server(const ServerOptions & opts) {
     const int ws_port = opts.ws_port == 0 ? opts.port + 1 : opts.ws_port;
     if (ws_port > 0) {
         const bool up = ws.start(opts.host, ws_port, [&](WsConn & c) {
-            ws_connection(c, model, codec, store, *mutex, opts.chunk_first, opts.chunk_max, opts.split_chars);
+            ws_connection(c, model, codec, store, *mutex, opts.chunk_first, opts.chunk_max,
+                          opts.split_chars, opts.stream_chars);
         });
         if (up) printf("websocket on ws://%s:%d\n", opts.host.c_str(), ws_port);
         else fprintf(stderr, "could not open the websocket port %d\n", ws_port);
@@ -157,7 +158,8 @@ int run_server(const ServerOptions & opts) {
         res.set_content("{\"status\":\"ok\",\"sample_rate\":" + std::to_string(sr) +
                         ",\"ws_port\":" + std::to_string(ws_port > 0 ? ws_port : 0) +
                         ",\"backend\":\"" + model.backend.name() + "\",\"model\":\"" +
-                        model_name + "\",\"default_voice\":\"" + store.default_id() + "\"}",
+                        model_name + "\",\"default_voice\":\"" + store.default_id() +
+                        "\",\"stream_chars\":" + std::to_string(opts.stream_chars) + "}",
                         "application/json");
     });
 

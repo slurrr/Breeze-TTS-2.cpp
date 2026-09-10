@@ -33,10 +33,10 @@ the rate given in the `ready` message, exactly like the HTTP body.
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `start` | `voice_id`, `use_default_voice`, `instruction`, `ref_text`, `cfg_scale`, `seed`, `temperature`, `top_k`, `split_chars` | Opens a session. Encodes the reference once for all of it. Set `use_default_voice` to `0` to force voice design. |
-| `text` | `text` | Adds text. Whole sentences are spoken as they complete, the rest waits. |
-| `flush` | `text` | Speaks everything buffered plus this text as one piece, sentence ending or not. Use it when the client has already split the text itself. |
-| `instruction` | `instruction` | Changes delivery for every piece queued after it. |
+| `start` | `voice_id`, `use_default_voice`, `instruction`, `ref_text`, `cfg_scale`, `seed`, `temperature`, `top_k`, `split_chars`, `stream_chars` | Opens a session. Encodes the reference once for all of it. Set `use_default_voice` to `0` to force voice design. |
+| `text` | `text` | Adds text. Completed text is spoken according to the session's streaming buffer policy. |
+| `flush` | `text` | Speaks what is buffered even without a sentence ending. |
+| `instruction` | `instruction` | Changes delivery from the next piece onwards. |
 | `cancel` | | Stops mid sentence and throws away anything buffered. |
 | `end` | `text` | Adds any last text, speaks everything, then reports `done`. |
 
@@ -76,15 +76,24 @@ or voice design driven by `instruction` when no default is set.
 
 ## Feeding text as it arrives
 
-Text is buffered and drained on sentence boundaries, so a fragment that does not
-finish a sentence is held rather than spoken. Sending an LLM's output verbatim as
-it streams produces one piece per sentence with no extra work.
+Send an LLM's output verbatim as `text` messages. Breeze owns the provider-side
+buffer and chooses complete text pieces; clients should not tokenize or split the
+text themselves.
 
-If the buffer grows past `split_chars` without a sentence ending, it breaks on a
-space instead, so text with no punctuation still gets spoken. `flush` forces
-whatever is waiting. It defaults to the server's `--split-chars`, but unlike the
-HTTP endpoint it cannot be turned off, since draining needs a size to aim at.
-`0` falls back to 600 here.
+`stream_chars` controls the latency/continuity tradeoff. It defaults to the
+server's `--stream-chars` setting:
+
+- `0` drains each completed sentence for the lowest text-to-audio latency.
+- A positive value waits for roughly that much text, then drains at the latest
+  useful sentence boundary. This gives each model pass several sentences of
+  context and substantially better paragraph-level prosody while remaining
+  incremental. The value is capped at `split_chars`.
+
+`split_chars` is the hard model-safe piece budget. If streamed text reaches that
+budget without useful punctuation, Breeze breaks it on a space. `flush` forces
+all currently buffered text, and `end` always drains the complete remainder
+before `done`. The WebSocket budget falls back to 600 when `split_chars` is `0`,
+because an open-ended stream still needs a safe maximum.
 
 While there is no reference clip, the opening piece doubles as the reference for
 everything after it, so it is capped near a normal clip length. A long first
